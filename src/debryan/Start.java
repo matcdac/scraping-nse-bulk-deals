@@ -1,6 +1,8 @@
 package debryan;
 
+import java.io.BufferedReader;
 import java.io.File;
+import java.io.FileReader;
 import java.io.FileWriter;
 import java.util.Date;
 import java.util.HashMap;
@@ -20,6 +22,8 @@ import debryan.util.JsonUtil;
 public class Start {
 
 	private static final String MONEY_CONTROL_BULK_DEALS_URL = "https://www.moneycontrol.com/stocks/marketstats/blockdeals/";
+	
+	private static final int MARKET_CLOSING_TIME_IN_AGGREGATED_MINUTES = 931;
 
 	private static final String WEBDRIVER_CHROME_PROPERTY_NAME = "webdriver.chrome.driver";
 	private static final String WEBDRIVER_CHROME_PROPERTY_VALUE_PATH = "/space/tools/chromedriver";
@@ -28,6 +32,8 @@ public class Start {
 	private static String todaysDate = null;
 	
 	private static int fileCount = 0;
+
+	private static Map<Integer, BulkDeal> bulkDeals = new HashMap<Integer, BulkDeal>();
 
 	private static final String COMPANY_NAME = "Company Name";
 	private static final String EXCHANGE = "Exchange";
@@ -57,19 +63,47 @@ public class Start {
 		return formattedDate;
 	}
 	
-	private static void createPathIfRequired(File file) {
-		if (!file.exists()) {
-			file.mkdirs();
+	private static void loadFile(int fileNumber, String fileName) throws Exception {
+		File file = new File(fileName);
+		FileReader fileReader = new FileReader(file);
+		BufferedReader bufferedReader = new BufferedReader(fileReader);
+		String json = new String();
+		String line = null;
+		while(null != (line = bufferedReader.readLine())) {
+			json += line;
+		}
+		bufferedReader.close();
+		fileReader.close();
+		BulkDeal bulkDeal = bulkDealJsonUtil.convertJsonToObject(json, BulkDeal.class);
+		bulkDeals.put(fileNumber, bulkDeal);
+	}
+	
+	private static void loadBulkDealFile(int index) {
+		++index;
+		String fileName = BASE_PATH + todaysDate + "/" + index + ".json";
+		try {
+			loadFile(index, fileName);
+		} catch (Exception e) {
+			ExceptionLogUtil.logException(e, "Error in Loading JSON file " + index + " of Bulk Deal");
 		}
 	}
-	
-	private static void countFilesInPath() {
-		File file = new File(BASE_PATH + todaysDate);
-		createPathIfRequired(file);
-		String[] someArray = file.list();
-		fileCount = someArray.length;
+
+	private static void loadExistingBulkDealsData(File folder) {
+		String[] fileNames = folder.list();
+		IntStream intStream = IntStream.range(0, fileNames.length).sequential();
+		intStream.forEach(index -> loadBulkDealFile(index));
+		fileCount = fileNames.length;
 	}
-	
+
+	private static void countFilesInPath() {
+		File folder = new File(BASE_PATH + todaysDate);
+		if (!folder.exists()) {
+			folder.mkdirs();
+		} else {
+			loadExistingBulkDealsData(folder);
+		}
+	}
+
 	private static void init() {
 		System.setProperty(WEBDRIVER_CHROME_PROPERTY_NAME, WEBDRIVER_CHROME_PROPERTY_VALUE_PATH);
 		todaysDate = getTodaysFormattedDate();
@@ -80,7 +114,7 @@ public class Start {
 		init();
 	}
 
-	private static void extractTransformLoadData(int index, WebElement webElementTableRow, Map<Integer, BulkDeal> bulkDeals) {
+	private static void extractTransformLoadData(int index, WebElement webElementTableRow) {
 		BulkDeal bulkDeal = new BulkDeal();
 		
 		++index;
@@ -105,7 +139,7 @@ public class Start {
 		bulkDeals.put(index, bulkDeal);
 	}
 
-	private static Map<Integer, BulkDeal> getBulkDealsData() {
+	private static Map<Integer, BulkDeal> getNewBulkDealsData() {
 		WebDriver webDriver = new ChromeDriver();
 		
 		webDriver.get(MONEY_CONTROL_BULK_DEALS_URL);
@@ -115,10 +149,8 @@ public class Start {
 		WebElement webElementTableBody = webElementDiv.findElement(By.tagName(TABLE_BODY));
 		List<WebElement> webElementTableRows = webElementTableBody.findElements(By.tagName(TABLE_ROW));
 		
-		Map<Integer, BulkDeal> bulkDeals = new HashMap<Integer, BulkDeal>();
-		
-		IntStream intStream = IntStream.range(0, webElementTableRows.size()).parallel();
-		intStream.forEach(index -> extractTransformLoadData(index, webElementTableRows.get(index), bulkDeals));
+		IntStream intStream = IntStream.range(fileCount, webElementTableRows.size()).parallel();
+		intStream.forEach(index -> extractTransformLoadData(index, webElementTableRows.get(index)));
 
 		webDriver.close();
 		
@@ -132,7 +164,6 @@ public class Start {
 			file.createNewFile();
 		}
 		String json = bulkDealJsonUtil.convertObjectToJson(bulkDeal);
-		System.out.println(i + " -> " + json);
 		FileWriter fileWriter = new FileWriter(file);
 		fileWriter.write(json);
 		fileWriter.close();
@@ -143,26 +174,35 @@ public class Start {
 		
 	}
 
-	private static void proceed(int i, BulkDeal bulkDeal) {
+	private static void proceedToWriteAndNotify(int i, BulkDeal bulkDeal) {
 		try {
 			writeDataInFile(i, bulkDeal);
+			fileCount++;
 		} catch (Exception e) {
 			ExceptionLogUtil.logException(e, "Error in Creating JSON file " + i + " of Bulk Deal");
 		}
 		sendSMS(i, bulkDeal);
 	}
 
-	public static void main(String[] args) {
-		
-		Map<Integer, BulkDeal> bulkDeals = getBulkDealsData();
-		
+	private static void process() {
+		getNewBulkDealsData();
 		int entriesCount = bulkDeals.keySet().size();
 		if (entriesCount > fileCount) {
 			for (int i = fileCount + 1; i <= entriesCount; i++) {
-				proceed(i, bulkDeals.get(i));
+				proceedToWriteAndNotify(i, bulkDeals.get(i));
 			}
 		}
-		
+	}
+
+	private static int getAggregatedMinutesOfTodayTillNow() {
+		Date date = new Date();
+		return date.getHours()*60 + date.getMinutes();
+	}
+
+	public static void main(String[] args) {
+		while ( getAggregatedMinutesOfTodayTillNow() < MARKET_CLOSING_TIME_IN_AGGREGATED_MINUTES ) {
+			process();
+		}
 	}
 
 }
