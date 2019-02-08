@@ -20,7 +20,17 @@ public class ExceptionLogUtil {
 
 	public static void logException(Exception e, String customMessage) {
 		//log.error(jsonUtil.convertObjectToJson(getGenericException(e, customMessage)));
-		System.out.println(jsonUtil.convertObjectToJson(getGenericException(e, customMessage)));
+		String jsonExecption = null;
+		try {
+			jsonExecption = jsonUtil.convertObjectToJson(getGenericException(e, customMessage));
+		} catch (Exception e1) {
+			System.err.println("Error in converting Exception to Json");
+		}
+		if (null != jsonExecption) {
+			System.out.println(jsonExecption);
+		} else {
+			System.out.println(customMessage);
+		}
 	}
 
 	public static String getLocalizedExceptionJson(Exception e, String customMessage) {
